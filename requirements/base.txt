@@ -1,0 +1,10 @@
+diffusers
+accelerate
+datasets
+numpy
+scipy
+matplotlib
+pillow
+clean-fid
+pandas
+tqdm
