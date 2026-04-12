@@ -114,7 +114,7 @@ python scripts/diffusion/estimate_steering_vectors.py \
     --output_dir ./results/sdxl/steering_vectors
 ```
 
-### Step 2a: Concept erasure
+### Step 2: Concept erasure
 
 Default steering strength for all concepts: **beta = 2** (Householder reflection, preserves L2 norm).
 
@@ -129,32 +129,6 @@ python scripts/diffusion/run_with_steering.py \
     --seed 42 \
     erase \
     --concept_path ./results/sdxl/steering_vectors/snoopy.pt
-```
-
-### Step 2b: Concept switching
-
-```bash
-python scripts/diffusion/run_with_steering.py \
-    --model_name sdxl \
-    --generate_concept horse \
-    --output_dir ./results/sdxl/horse_to_motorcycle/casteer-2.0 \
-    --steering_strength 2.0 \
-    --intermediate_clipping \
-    --num_images_per_prompt 10 \
-    --seed 42 \
-    translate \
-    --source_concept_path ./results/sdxl/steering_vectors/horse.pt \
-    --target_concept_path ./results/sdxl/steering_vectors/motorcycle.pt
-```
-
-### Step 3: Evaluate
-
-```bash
-python scripts/diffusion/produce_scores.py \
-    --concept horse motorcycle \
-    --dir ./results/sdxl/horse_to_motorcycle \
-    --num_workers 4 \
-    --batch_size 32
 ```
 
 ## Evaluation Datasets
