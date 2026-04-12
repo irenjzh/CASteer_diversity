@@ -46,7 +46,7 @@ Steering vectors from distilled variants (SDXL-Turbo, SANA-Sprint) are used for 
 ### Setup
 
 ```bash
-git clone https://github.com/tatiana-gaintseva/CASteer.git
+git clone https://github.com/atmyre/CASteer.git
 cd CASteer
 python3 -m venv .venv
 source .venv/bin/activate
