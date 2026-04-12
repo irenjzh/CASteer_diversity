@@ -77,7 +77,6 @@ CASteer/
 │   └── produce_scores.py             # Step 3: evaluate (CLIP, FID)
 ├── exp/
 │   ├── datasets/eval/            # Evaluation prompt templates (ImageNet, COCO)
-│   └── sh/                       # SLURM experiment scripts
 └── requirements/
 ```
 
