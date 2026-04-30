@@ -1,0 +1,16 @@
+DEFAULT_BANK_CONCEPTS = [
+    ('anime', 'style'),
+    ('watercolor', 'style'),
+    ('oil painting', 'style'),
+    ('pixel art', 'style'),
+    ('sketch', 'style'),
+    ('photorealistic', 'style'),
+    ('cyberpunk', 'style'),
+    ('3d render', 'style'),
+    ('origami', 'style'),
+    ('flowers', 'concrete'),
+    ('butterflies', 'concrete'),
+    ('crystals', 'concrete'),
+    ('snow', 'concrete'),
+    ('fire', 'concrete'),
+]
