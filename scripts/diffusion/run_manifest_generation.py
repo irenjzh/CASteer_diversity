@@ -66,7 +66,7 @@ def normalize_variants(args: argparse.Namespace) -> list[dict]:
                     "name": "random_steering",
                     "baseline": False,
                     "steering_source": args.steering_source,
-                    "strength": args.steering_strength,
+                    "strength": 1,
                     "randomize_source": True,
                     "random_seed": args.random_seed,
                     "use_all_diffusion_steps": args.use_all_diffusion_steps,
