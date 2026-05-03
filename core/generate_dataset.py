@@ -8,6 +8,7 @@ import pickle
 import re
 import typing as tp
 
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
@@ -66,24 +67,15 @@ def assign_concepts_to_seeds(
 
     ordered_seeds = sorted(int(seed) for seed in seeds)
     assignments: dict[str, str] = {}
-    concepts = list(concept_names)
+    shuffled_concepts = list(concept_names)
+    rng = random.Random(concept_seed + prompt_index * 1000)
+    rng.shuffle(shuffled_concepts)
+    concept_count = len(shuffled_concepts)
 
-    # Keep assignments deterministic per prompt while avoiding repeats
-    # until the available concept list is exhausted.
-    cycle_index = 0
-    assigned_count = 0
-    shuffled_cycle: list[str] = []
-
-    for seed in ordered_seeds:
-        if assigned_count % len(concepts) == 0:
-            rng = random.Random(concept_seed + prompt_index * 1000 + cycle_index)
-            shuffled_cycle = concepts.copy()
-            rng.shuffle(shuffled_cycle)
-            cycle_index += 1
-
-        concept_name = shuffled_cycle[assigned_count % len(concepts)]
-        assignments[str(seed)] = concept_name
-        assigned_count += 1
+    # Reuse a single deterministic permutation per prompt so concepts do not
+    # repeat until the available list is exhausted.
+    for index, seed in enumerate(ordered_seeds):
+        assignments[str(seed)] = shuffled_concepts[index % concept_count]
 
     return assignments
 
@@ -501,6 +493,78 @@ def write_summary_csv(rows: tp.Sequence[dict[str, tp.Any]], output_path: str) ->
     return output_path
 
 
+def strip_selection_fields_from_summary_rows(
+    rows: tp.Sequence[dict[str, tp.Any]],
+) -> list[dict[str, tp.Any]]:
+    excluded = {
+        "eligible_for_selection",
+        "pareto_rank",
+        "is_selected_best",
+        "selection_score",
+    }
+    return [{key: value for key, value in row.items() if key not in excluded} for row in rows]
+
+
+def save_validation_metric_plots(
+    rows: tp.Sequence[dict[str, tp.Any]],
+    output_dir: str,
+) -> tuple[str | None, str | None]:
+    steering_rows = [
+        row for row in rows
+        if row.get("variant") == "best_steering" and row.get("strength") is not None
+    ]
+    if not steering_rows:
+        return None, None
+
+    steering_rows = sorted(steering_rows, key=lambda row: float(row["strength"]))
+    strengths = [float(row["strength"]) for row in steering_rows]
+    clip_scores = [float(row["clip_score_mean"]) for row in steering_rows]
+    fid_scores = [float(row["fid"]) for row in steering_rows]
+    baseline_row = next((row for row in rows if row.get("variant") == "baseline"), None)
+
+    ensure_dir(output_dir)
+
+    clip_path = os.path.join(output_dir, "clip_vs_strength.png")
+    plt.figure(figsize=(8, 5))
+    plt.plot(strengths, clip_scores, marker="o")
+    if baseline_row is not None:
+        plt.axhline(
+            float(baseline_row["clip_score_mean"]),
+            linestyle="--",
+            color="tab:gray",
+            label="baseline",
+        )
+        plt.legend()
+    plt.xlabel("strength")
+    plt.ylabel("clip_score_mean")
+    plt.title("CLIP vs strength")
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(clip_path, dpi=150)
+    plt.close()
+
+    fid_path = os.path.join(output_dir, "fid_vs_strength.png")
+    plt.figure(figsize=(8, 5))
+    plt.plot(strengths, fid_scores, marker="o", color="tab:orange")
+    if baseline_row is not None:
+        plt.axhline(
+            float(baseline_row["fid"]),
+            linestyle="--",
+            color="tab:gray",
+            label="baseline",
+        )
+        plt.legend()
+    plt.xlabel("strength")
+    plt.ylabel("fid")
+    plt.title("FID vs strength")
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(fid_path, dpi=150)
+    plt.close()
+
+    return clip_path, fid_path
+
+
 def run_validation_strength_sweep(
     *,
     manifest: tp.Sequence[dict[str, tp.Any]],
@@ -614,9 +678,11 @@ def run_validation_strength_sweep(
 
     best_row, annotated_steering_rows = select_best_validation_strength_row(steering_rows)
     summary_rows.extend(annotated_steering_rows)
+    save_validation_metric_plots(summary_rows, output_root)
 
-    write_summary_csv(summary_rows, os.path.join(output_root, "summary.csv"))
-    save_json(os.path.join(output_root, "summary.json"), summary_rows)
+    public_summary_rows = strip_selection_fields_from_summary_rows(summary_rows)
+    write_summary_csv(public_summary_rows, os.path.join(output_root, "summary.csv"))
+    save_json(os.path.join(output_root, "summary.json"), public_summary_rows)
     save_json(os.path.join(output_root, "best_config.json"), best_row)
     return summary_rows, best_row
 
