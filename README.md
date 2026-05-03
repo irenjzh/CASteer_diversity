@@ -61,6 +61,9 @@ pip install -r requirements/linux.txt
 export HF_TOKEN=your_huggingface_token
 ```
 
+The test-set evaluator additionally downloads public checkpoints for PickScore,
+ImageReward, and MPS on first run.
+
 ## Repository Structure
 
 ```
@@ -210,6 +213,51 @@ python scripts/diffusion/produce_scores.py \
     --dir ./results/sd14/coco \
     --num_workers 4 --batch_size 32
 ```
+
+### Validation/test split comparison (baseline vs random vs steering)
+Use the deterministic COCO split pipeline when you want to compare
+`baseline`, `random_steering`, and `best_steering` on the same test prompts
+with `clip_score`, `pick_score`, `image_reward`, `mps`, and `vendi`.
+
+```bash
+# 1. Create deterministic validation/test manifests
+python scripts/diffusion/create_coco_splits.py \
+    --coco_dir ./data/coco \
+    --output_dir ./results/coco_split_eval \
+    --validation_size 100 \
+    --test_size 2000 \
+    --seeds 0 1 2 3 4
+
+# 2. Generate the three test variants
+python scripts/diffusion/run_manifest_generation.py \
+    --model_name sdxl \
+    --manifest_path ./results/coco_split_eval/splits/test_manifest.json \
+    --output_dir ./results/coco_split_eval/test_runs \
+    --variants baseline best_steering random_steering \
+    --steering_source ./exp/steering_vectors_sdxl/default_bank.pickle \
+    --steering_strength 1.0
+
+# 3. Evaluate all three variants on the test split
+python scripts/diffusion/evaluate_test_metrics.py \
+    --output_root ./results/coco_split_eval/test_runs \
+    --split test \
+    --metrics clip_score pick_score image_reward mps vendi
+```
+
+This writes per-variant `test_metrics.json` files inside each experiment
+directory and a global comparison table to:
+
+- `./results/coco_split_eval/test_runs/test_metrics_summary.csv`
+- `./results/coco_split_eval/test_runs/test_metrics_summary.json`
+
+Notes:
+
+- `clip_score`, `pick_score`, `image_reward`, and `mps` are averaged per prompt
+  over its generated seeds, then averaged over prompts.
+- `vendi` is computed per prompt over the generated seed images using CLIP image
+  embeddings, then averaged over prompts.
+- Re-running `evaluate_test_metrics.py` reuses existing `test_metrics.json`
+  files unless you pass `--overwrite`.
 
 ### I2P benchmark (safety evaluation)
 4,703 prompts from the I2P dataset, evaluated with NudeNet and Q16 classifiers.
