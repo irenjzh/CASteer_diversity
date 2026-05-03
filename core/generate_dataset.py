@@ -53,6 +53,41 @@ def choose_concept_name(concept_names: tp.Sequence[str], prompt_index: int, seed
     return concept_names[rng.randrange(len(concept_names))]
 
 
+def assign_concepts_to_seeds(
+    concept_names: tp.Sequence[str],
+    prompt_index: int,
+    seeds: tp.Sequence[int],
+    concept_seed: int = 0,
+) -> dict[str, str]:
+    import random
+
+    if not concept_names:
+        return {}
+
+    ordered_seeds = sorted(int(seed) for seed in seeds)
+    assignments: dict[str, str] = {}
+    concepts = list(concept_names)
+
+    # Keep assignments deterministic per prompt while avoiding repeats
+    # until the available concept list is exhausted.
+    cycle_index = 0
+    assigned_count = 0
+    shuffled_cycle: list[str] = []
+
+    for seed in ordered_seeds:
+        if assigned_count % len(concepts) == 0:
+            rng = random.Random(concept_seed + prompt_index * 1000 + cycle_index)
+            shuffled_cycle = concepts.copy()
+            rng.shuffle(shuffled_cycle)
+            cycle_index += 1
+
+        concept_name = shuffled_cycle[assigned_count % len(concepts)]
+        assignments[str(seed)] = concept_name
+        assigned_count += 1
+
+    return assignments
+
+
 def _safe_name(value: str) -> str:
     safe = re.sub(r"[^A-Za-z0-9._-]+", "_", value).strip("._")
     return safe or "item"
@@ -691,17 +726,18 @@ def generate_dataset_variants(
                 with open(os.path.join(prompt_dir, "prompt.txt"), "w", encoding="utf-8") as fout:
                     fout.write(record["caption"])
 
-                chosen_concepts: dict[str, str | None] = {}
+                if concept_bank is not None:
+                    chosen_concepts: dict[str, str | None] = assign_concepts_to_seeds(
+                        concept_names=concept_names,
+                        prompt_index=int(record["prompt_index"]),
+                        seeds=record["seeds"],
+                        concept_seed=variant_concept_seed,
+                    )
+                else:
+                    chosen_concepts = {}
                 if _is_prompt_complete(experiment_dir, int(record["prompt_index"]), record["seeds"], file_format):
                     for seed in record["seeds"]:
-                        if concept_bank is not None:
-                            chosen_concepts[str(seed)] = choose_concept_name(
-                                concept_names=concept_names,
-                                prompt_index=int(record["prompt_index"]),
-                                seed=int(seed),
-                                concept_seed=variant_concept_seed,
-                            )
-                        else:
+                        if concept_bank is None:
                             chosen_concepts[str(seed)] = None
                     _save_prompt_metadata(prompt_dir, record, concept_names, chosen_concepts)
                     skipped += len(record["seeds"])
@@ -710,14 +746,7 @@ def generate_dataset_variants(
                 for seed in record["seeds"]:
                     image_path = _prompt_image_path(experiment_dir, int(record["prompt_index"]), int(seed), file_format)
                     if os.path.exists(image_path):
-                        if concept_bank is not None:
-                            chosen_concepts[str(seed)] = choose_concept_name(
-                                concept_names=concept_names,
-                                prompt_index=int(record["prompt_index"]),
-                                seed=int(seed),
-                                concept_seed=variant_concept_seed,
-                            )
-                        else:
+                        if concept_bank is None:
                             chosen_concepts[str(seed)] = None
                         skipped += 1
                         continue
@@ -725,12 +754,7 @@ def generate_dataset_variants(
                     steering_vectors = None
                     chosen_concept = None
                     if concept_bank is not None:
-                        chosen_concept = choose_concept_name(
-                            concept_names=concept_names,
-                            prompt_index=int(record["prompt_index"]),
-                            seed=int(seed),
-                            concept_seed=variant_concept_seed,
-                        )
+                        chosen_concept = tp.cast(str, chosen_concepts[str(seed)])
                         steering_vectors = concept_bank[chosen_concept]
                     elif fixed_steering_vectors is not None:
                         steering_vectors = fixed_steering_vectors
