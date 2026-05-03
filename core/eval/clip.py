@@ -45,6 +45,8 @@ def clip_score(
     clip_model: str = "ViT-B/32",
     n_px: int = 224,
     cross_matching: bool = False,
+    batch_size: int = 50,
+    device: str | None = None,
 ):
     """
     Compute CLIPScore (https://arxiv.org/abs/2104.08718) for generated images according to their prompts.
@@ -72,22 +74,34 @@ def clip_score(
         texts
     ), "The length of images and texts should be the same if cross_matching is False."
 
-    model, _ = clip.load(clip_model, device="cuda")
+    if cross_matching:
+        raise NotImplementedError("cross_matching=True is not implemented in this helper")
+
+    if batch_size <= 0:
+        raise ValueError("batch_size must be positive")
+
+    if device is None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    model, _ = clip.load(clip_model, device=device)
     image_preprocess, text_preprocess = get_clip_preprocess(
         n_px
     )  # following the official implementation, rather than using the default CLIP preprocess
 
-    sc = None
-#     print(images)
-    for i in tqdm(range(len(images) // 50)):
+    sc = []
+    for start in tqdm(range(0, len(images), batch_size)):
+        end = min(start + batch_size, len(images))
+        batch_images = images[start:end]
+        batch_texts = texts[start:end]
+
         # extract all texts
-        texts_feats = text_preprocess(texts[i*50:(i+1)*50]).cuda()
+        texts_feats = text_preprocess(batch_texts).to(device)
         texts_feats = model.encode_text(texts_feats)
     
         # extract all images
-        images_feats = [Image.open(img) for img in images[i*50:(i+1)*50]]
+        images_feats = [Image.open(img) for img in batch_images]
         images_feats = [image_preprocess(img) for img in images_feats]
-        images_feats = torch.stack(images_feats, dim=0).cuda()
+        images_feats = torch.stack(images_feats, dim=0).to(device)
         images_feats = model.encode_image(images_feats)
     
         # compute the similarity
@@ -95,12 +109,12 @@ def clip_score(
         texts_feats = texts_feats / texts_feats.norm(dim=1, p=2, keepdim=True)
         
         score = w * images_feats * texts_feats
-        if sc is None:
-            sc = score
-        else:
-            sc = torch.cat([sc, score], dim=0)
-        
-        
+        sc.append(score)
+
+    if not sc:
+        return np.asarray([], dtype=np.float32)
+
+    sc = torch.cat(sc, dim=0)
     return sc.sum(dim=1).clamp(min=0).cpu().numpy()
 
 

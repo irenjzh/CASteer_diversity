@@ -24,7 +24,7 @@ from core.diffusion_steering import DiffusionModelType, diffusion_register_vecto
 from core.utils import SUPPORTED_DIFFUSION_MODELS, get_device, init_pipeline_for_image_model, run_image_model
 from core.vector_dump import CrossAttentionOutputStatsCollector, TokenAggregationMode
 
-from const import DEFAULT_BANK_CONCEPTS
+from core.const import DEFAULT_BANK_CONCEPTS
 
 
 def ensure_dir(path: str) -> str:

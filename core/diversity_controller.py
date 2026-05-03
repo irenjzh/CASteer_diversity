@@ -1,18 +1,18 @@
-import logging
-import warnings
-import torch
 import abc
+import logging
 import typing as tp
+import warnings
 from collections import defaultdict
 from typing import Any
 
-logger = logging.getLogger()
+import torch
 
+logger = logging.getLogger()
 EPS = 1e-6
 
 
 class VectorControl(abc.ABC):
-    def __init__(self, num_layers: int = None):
+    def __init__(self, num_layers: int | None = None):
         self._active = True
         self._diffusion_step = 0
         self._current_attn_layer = 0
@@ -53,138 +53,109 @@ class VectorControl(abc.ABC):
             self._diffusion_step += 1
         return vector
 
-# For each diffusion step,
-# for each place in the network represented as string key,
-# for each layer position, we store steering vector
-SteeringVectors = tp.NewType('SteeringVectors', dict[int, dict[str, list[torch.Tensor]]])
+
+SteeringVectors = tp.NewType("SteeringVectors", dict[int, dict[str, list[torch.Tensor]]])
 
 
-class CrossAttentionOutputSteering(VectorControl):
-    """
-    CASteer: Cross-Attention Output Steering.
+class CrossAttentionOutputAdditiveSteering(VectorControl):
+    """Additive steering over cross-attention outputs.
 
-    Implements concept erasure and concept switching by projecting out
-    the steering direction from cross-attention outputs.
-
-    Equation 6 (with intermediate clipping):
-        alpha = max(beta * <ca_X, ca_out>, 0)
-        ca_out_new = ca_out - alpha * ca_X
-
-    Equation 5 (matrix form):
-        s_new = (I - beta * s * s^T) * c
+    The controller adds one or more steering vectors to the attention output and,
+    optionally, rescales the result back to the original per-token norm.
     """
 
     def __init__(
         self,
         *,
         source_concepts: list[SteeringVectors],
-        target_concepts: list[SteeringVectors | None],
         strength: float,
         device: Any,
-        num_layers: int = None,
-        intermediate_clipping: bool = True,
+        num_layers: int | None = None,
         use_first_diffusion_step: bool = False,
+        renormalize_output: bool = True,
+        output_dtype: torch.dtype | None = None,
     ):
         super().__init__(num_layers=num_layers)
         self.device = device
-        self.intermediate_clipping = intermediate_clipping
         self.strength = strength
         self.use_first_diffusion_step = use_first_diffusion_step
+        self.renormalize_output = renormalize_output
+        self.output_dtype = output_dtype
 
         if self.strength < 0:
-            raise ValueError('Negative values of strength are not supported')
+            raise ValueError("Negative values of strength are not supported")
 
         self.casteer_vectors = []
-        for source_concept, target_concept in zip(source_concepts, target_concepts):
-            casteer_concept_transforms = defaultdict(lambda: defaultdict(list))
-            for num_steer in source_concept:
-                for place_in_unet in source_concept[num_steer]:
-                    for block_idx in range(len(source_concept[num_steer][place_in_unet])):
-                        source_vector = source_concept[num_steer][place_in_unet][block_idx]
-                        if target_concept is not None:
-                            target_vector = target_concept[num_steer][place_in_unet][block_idx]
-                        else:
-                            target_vector = torch.zeros_like(source_vector)
-                        steering_vector = source_vector - target_vector
-
+        for source_concept in source_concepts:
+            casteer_concept_vectors = defaultdict(lambda: defaultdict(list))
+            for num_steer, place_payload in source_concept.items():
+                for place_in_unet, layer_vectors in place_payload.items():
+                    for steering_vector in layer_vectors:
                         if len(steering_vector.shape) == 1:
                             steering_vector = steering_vector.unsqueeze(0)
-                        steering_vector = steering_vector.to(self.device).unsqueeze(-1)
+                        casteer_concept_vectors[num_steer][place_in_unet].append(
+                            steering_vector.to(self.device)
+                        )
+            self.casteer_vectors.append(casteer_concept_vectors)
 
-                        # Precompute projection matrix P = I - beta * v * v^+ (Eq. 5)
-                        res = self.strength * (steering_vector @ torch.linalg.pinv(steering_vector))
-                        P = torch.eye(res.shape[1], dtype=res.dtype, device=self.device).unsqueeze(0) - res
+    def _resolve_step_key(self, casteer_vectors, diffusion_step: int) -> int | None:
+        if not casteer_vectors:
+            return None
+        if self.use_first_diffusion_step:
+            if 0 in casteer_vectors:
+                return 0
+            return sorted(casteer_vectors.keys())[0]
+        if diffusion_step in casteer_vectors:
+            return diffusion_step
+        if 0 in casteer_vectors:
+            return 0
+        return sorted(casteer_vectors.keys())[0]
 
-                        casteer_concept_transforms[num_steer][place_in_unet].append((steering_vector.squeeze(-1), P))
-            self.casteer_vectors.append(casteer_concept_transforms)
-
-        self.steering_cache = {}
-
-    def steer_matrix_form(self, vector: torch.Tensor, *steering_tensors: torch.Tensor) -> torch.Tensor:
-        """Apply steering using precomputed projection matrix (Eq. 5)."""
-        batch_size = vector.shape[0]
-        sequence_length = vector.shape[1]
-        num_heads = vector.shape[2]
-        hidden_dim = vector.shape[3]
-        (_, P) = steering_tensors
-
-        vector_steered = ((
-            vector.to(self.device).reshape(-1, num_heads, hidden_dim).transpose(0, 1) @ P.to(vector.device).mT
-        )).transpose(0, 1).reshape(batch_size, sequence_length, num_heads, hidden_dim)
-        return vector_steered
-
-    def steer_with_clipping(self, vector: torch.Tensor, *steering_tensors: torch.Tensor) -> torch.Tensor:
-        """
-        Apply steering with intermediate clipping (Eq. 6):
-            alpha = max(beta * <ca_X, ca_out>, 0)
-            ca_out_new = ca_out - alpha * ca_X
-        """
+    def steer_additive(self, vector: torch.Tensor, steering_vector: torch.Tensor) -> torch.Tensor:
         assert len(vector.shape) == 4
 
-        batch_size = vector.shape[0]
-        sequence_length = vector.shape[1]
-        num_heads = vector.shape[2]
-        hidden_dim = vector.shape[3]
-        (b, _) = steering_tensors
+        steering_vector = steering_vector.to(vector.device, dtype=vector.dtype)
 
-        b_norm = b / torch.linalg.norm(b, dim=-1, keepdim=True)
+        original_norm = None
+        if self.renormalize_output:
+            original_norm = torch.linalg.norm(vector, dim=-1, keepdim=True).clamp(min=EPS)
 
-        vector_reshaped = vector.to(self.device).reshape(-1, num_heads, hidden_dim).transpose(0, 1)
-        b_norm_reshaped = b_norm.unsqueeze(-1)
+        steered_vector = vector + self.strength * steering_vector
 
-        # Compute dot products between vector components and steering vector
-        projection_scores = (
-            vector_reshaped @ b_norm_reshaped
-        ).transpose(0, 1).reshape(batch_size, -1, num_heads, 1)
+        if self.renormalize_output:
+            steered_norm = torch.linalg.norm(steered_vector, dim=-1, keepdim=True).clamp(min=EPS)
+            steered_vector = (steered_vector / steered_norm) * original_norm
 
-        # Clip: only steer when dot product is positive (concept is present)
-        if self.intermediate_clipping:
-            projection_scores = torch.where(projection_scores > 0, projection_scores, 0)
+        return steered_vector
 
-        steering_delta = -self.strength * projection_scores.to(vector.device) * b_norm.to(vector.device)
-
-        return vector + steering_delta
-
-    # [batch_size, sequence_length, num_heads, head_dim]
     def forward(self, vector: torch.Tensor, diffusion_step: int, place_in_unet: str, block_index: int):
         batch_size = vector.shape[0]
         if batch_size > 1:
-            # Steer only the prompt part of classifier-free guidance
             batch_slice = slice(batch_size // 2, None)
-            warnings.warn('Steering only the prompt part of classifier-free guidance (assumed the batch_idx=0 is not conditioned on the prompt)')
+            warnings.warn(
+                "Steering only the prompt part of classifier-free guidance "
+                "(assumed the batch_idx=0 is not conditioned on the prompt)"
+            )
         else:
             batch_slice = slice(None, None)
 
         vector = vector.detach().clone()
 
-        if place_in_unet in ['up', 'mid', 'down', 'joint', 'single', 'sana']:
-            # Use first step vectors for all steps (turbo/sprint) or per-step vectors
-            num_steer = 0 if self.use_first_diffusion_step else diffusion_step
-
+        if place_in_unet in ["up", "mid", "down", "joint", "single", "sana"]:
             for casteer_vectors in self.casteer_vectors:
-                vector[batch_slice, ...] = self.steer_with_clipping(
+                num_steer = self._resolve_step_key(casteer_vectors, diffusion_step)
+                if num_steer is None:
+                    continue
+                place_vectors = casteer_vectors.get(num_steer, {}).get(place_in_unet)
+                if not place_vectors or block_index >= len(place_vectors):
+                    continue
+
+                steering_vector = place_vectors[block_index]
+                vector[batch_slice, ...] = self.steer_additive(
                     vector[batch_slice, ...],
-                    *casteer_vectors[num_steer][place_in_unet][block_index]
+                    steering_vector,
                 )
-        return vector.half()
- 
+
+        if self.output_dtype is not None:
+            return vector.to(self.output_dtype)
+        return vector
