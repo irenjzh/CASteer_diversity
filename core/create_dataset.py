@@ -129,6 +129,8 @@ def create_coco_split_manifests(
     split_seed: int = 42,
     seeds: Optional[Sequence[int]] = None,
     overwrite: bool = False,
+    create_validation_reference: bool = True,
+    create_test_reference: bool = True,
 ) -> Dict[str, Any]:
     """Build deterministic validation/test manifests from COCO val2017.
 
@@ -182,14 +184,19 @@ def create_coco_split_manifests(
         save_json(validation_manifest_path, validation_manifest)
         save_json(test_manifest_path, test_manifest)
 
-    validation_reference_dir = create_reference_dir(
-        validation_manifest,
-        os.path.join(split_dir, "validation_reference"),
-    )
-    test_reference_dir = create_reference_dir(
-        test_manifest,
-        os.path.join(split_dir, "test_reference"),
-    )
+    validation_reference_dir = None
+    if create_validation_reference:
+        validation_reference_dir = create_reference_dir(
+            validation_manifest,
+            os.path.join(split_dir, "validation_reference"),
+        )
+
+    test_reference_dir = None
+    if create_test_reference:
+        test_reference_dir = create_reference_dir(
+            test_manifest,
+            os.path.join(split_dir, "test_reference"),
+        )
 
     return {
         "validation_manifest_path": validation_manifest_path,
