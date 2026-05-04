@@ -84,12 +84,30 @@ def _pickscore_projected_embeddings(outputs: Any, *, source: str) -> torch.Tenso
     if torch.is_tensor(outputs):
         return outputs
 
-    projected = getattr(outputs, "pooler_output", None)
-    if torch.is_tensor(projected):
-        return projected
+    candidate_names = (
+        "image_embeds",
+        "text_embeds",
+        "pooler_output",
+        "last_hidden_state",
+    )
+    for name in candidate_names:
+        value = getattr(outputs, name, None)
+        if torch.is_tensor(value):
+            return value[:, 0] if name == "last_hidden_state" else value
+
+    if isinstance(outputs, dict):
+        for name in candidate_names:
+            value = outputs.get(name)
+            if torch.is_tensor(value):
+                return value[:, 0] if name == "last_hidden_state" else value
+
+    if isinstance(outputs, (tuple, list)):
+        for value in outputs:
+            if torch.is_tensor(value):
+                return value
 
     raise TypeError(
-        f"{source} did not return a tensor or an object with pooler_output; got {type(outputs).__name__}"
+        f"{source} did not return a recognized embedding tensor; got {type(outputs).__name__}"
     )
 
 
@@ -212,8 +230,9 @@ class PickScoreMetric:
             image_inputs = {key: value.to(self.device) for key, value in image_inputs.items()}
             text_inputs = {key: value.to(self.device) for key, value in text_inputs.items()}
 
-            # In transformers==4.27.4, CLIPModel.get_*_features returns a model
-            # output object whose projected embeddings are stored in pooler_output.
+            # PickScore has returned different CLIP-style output wrappers across
+            # transformers releases, so we normalize the projected embeddings
+            # after extracting them from the known output fields.
             image_embs = _normalize_embeddings(
                 _pickscore_projected_embeddings(
                     self.model.get_image_features(**image_inputs),

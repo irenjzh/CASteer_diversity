@@ -40,16 +40,21 @@ Steering vectors from distilled variants (SDXL-Turbo, SANA-Sprint) are used for 
 
 ### Requirements
 
-- Python 3.10+
+- Python 3.12
 - CUDA-capable GPU (16GB+ VRAM recommended)
+
+The evaluation stack is tested with `transformers==4.53.2`,
+`tokenizers==0.21.2`, and `image-reward==1.5`, which install cleanly on
+Python 3.12, including current Colab runtimes.
 
 ### Setup
 
 ```bash
 git clone https://github.com/atmyre/CASteer.git
 cd CASteer
-python3 -m venv .venv
+python3.12 -m venv .venv
 source .venv/bin/activate
+python --version  # should print Python 3.12.x
 
 # For macOS
 pip install -r requirements/darwin.txt

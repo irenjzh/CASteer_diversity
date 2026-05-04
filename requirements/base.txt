@@ -8,6 +8,7 @@ pillow
 clean-fid
 pandas
 tqdm
-transformers==4.27.4
-image-reward
+transformers==4.53.2
+tokenizers==0.21.2
+image-reward==1.5
 imscore
