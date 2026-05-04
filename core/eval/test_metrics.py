@@ -201,12 +201,15 @@ class PickScoreMetric:
         batch_size: int = 16,
         device: str | None = None,
     ) -> None:
-        from transformers import AutoModel, AutoProcessor
+        from transformers import AutoProcessor, CLIPModel
 
         self.device = resolve_metric_device(device)
         self.batch_size = batch_size
         self.processor = AutoProcessor.from_pretrained(processor_name)
-        self.model = AutoModel.from_pretrained(model_name).eval().to(self.device)
+        # PickScore v1 is a CLIP-style checkpoint. Loading the concrete CLIPModel
+        # avoids AutoModel's registry walk, which can import unrelated model
+        # modules that require newer optional deps than ImageReward allows.
+        self.model = CLIPModel.from_pretrained(model_name).eval().to(self.device)
 
     @torch.no_grad()
     def score_prompt(self, image_paths: Sequence[str], prompt: str) -> np.ndarray:
@@ -307,6 +310,8 @@ class MPSMetric:
 
 
 def vendi_score_from_embeddings(embeddings: np.ndarray) -> float:
+    embeddings = np.asarray(embeddings, dtype=np.float32)
+
     if embeddings.ndim != 2:
         raise ValueError("embeddings must have shape [num_images, dim]")
 
