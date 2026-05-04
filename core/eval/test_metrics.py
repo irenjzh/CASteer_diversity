@@ -76,6 +76,10 @@ def _scores_to_numpy(scores: Any) -> np.ndarray:
     return arr.astype(np.float32).reshape(-1)
 
 
+def _normalize_embeddings(embeddings: torch.Tensor) -> torch.Tensor:
+    return embeddings / embeddings.norm(dim=-1, p=2, keepdim=True).clamp_min(1e-12)
+
+
 @dataclass(frozen=True)
 class PromptRecord:
     prompt_name: str
@@ -195,10 +199,10 @@ class PickScoreMetric:
             image_inputs = {key: value.to(self.device) for key, value in image_inputs.items()}
             text_inputs = {key: value.to(self.device) for key, value in text_inputs.items()}
 
-            image_embs = self.model.get_image_features(**image_inputs)
-            image_embs = image_embs / image_embs.norm(dim=-1, keepdim=True)
-            text_embs = self.model.get_text_features(**text_inputs)
-            text_embs = text_embs / text_embs.norm(dim=-1, keepdim=True)
+            # PickScore's official inference code targets transformers==4.27.3,
+            # where get_*_features returns projected embedding tensors directly.
+            image_embs = _normalize_embeddings(self.model.get_image_features(**image_inputs))
+            text_embs = _normalize_embeddings(self.model.get_text_features(**text_inputs))
 
             batch_scores = self.model.logit_scale.exp() * (text_embs * image_embs).sum(dim=-1)
             scores.append(batch_scores.cpu())

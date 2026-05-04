@@ -8,6 +8,6 @@ pillow
 clean-fid
 pandas
 tqdm
-transformers
+transformers==4.27.3
 image-reward
 imscore
