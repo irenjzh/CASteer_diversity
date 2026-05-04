@@ -106,9 +106,9 @@ def _link_or_copy(src: str, dst: str) -> None:
     if os.path.lexists(dst):
         return
     try:
-        os.symlink(src, dst)
-    except OSError:
         shutil.copy2(src, dst)
+    except OSError:
+        shutil.copyfile(src, dst)
 
 
 def create_reference_dir(records: Sequence[Dict[str, Any]], reference_dir: str) -> str:
