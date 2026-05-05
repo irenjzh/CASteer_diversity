@@ -91,16 +91,7 @@ def normalize_variants(args: argparse.Namespace) -> list[dict]:
     return variants
 
 
-def should_generate_baseline_sample(variants: list[dict]) -> bool:
-    has_steering = any(
-        variant.get("name") in {"best_steering", "random_steering"}
-        for variant in variants
-    )
-    has_full_baseline = any(variant.get("baseline", False) for variant in variants)
-    return has_steering and not has_full_baseline
-
-
-def generate_inline_baseline_sample(
+def generate_inline_baseline_samples(
     *,
     manifest: list[dict],
     results: list[dict],
@@ -109,44 +100,44 @@ def generate_inline_baseline_sample(
     device,
     file_format: str,
 ) -> list[dict]:
-    record = manifest[0]
-    seeds = list(record.get("seeds", []))
-    if not seeds:
-        raise ValueError("Cannot generate a baseline sample because the first manifest record has no seeds")
-
     generated: list[dict] = []
-    prompt_index = int(record["prompt_index"])
-    seed = int(seeds[0])
     ext = EXTENSIONS[file_format]
 
     for result in results:
-        if result["variant"] not in {"best_steering", "random_steering"}:
-            continue
+        for record in manifest:
+            seeds = list(record.get("seeds", []))
+            if not seeds:
+                raise ValueError(
+                    f"Cannot generate a baseline sample because prompt "
+                    f"{record.get('prompt_index')} has no seeds"
+                )
 
-        prompt_dir = ensure_dir(_prompt_dir(result["experiment_dir"], prompt_index))
-        output_path = os.path.join(prompt_dir, f"baseline.{ext}")
-        skipped = os.path.exists(output_path)
-        if not skipped:
-            _generate_single_image(
-                pipeline=pipeline,
-                model_name=model_name,
-                prompt=record["caption"],
-                seed=seed,
-                device=device,
-                output_path=output_path,
-                file_format=file_format,
+            prompt_index = int(record["prompt_index"])
+            seed = int(seeds[0])
+            prompt_dir = ensure_dir(_prompt_dir(result["experiment_dir"], prompt_index))
+            output_path = os.path.join(prompt_dir, f"baseline.{ext}")
+            skipped = os.path.exists(output_path)
+            if not skipped:
+                _generate_single_image(
+                    pipeline=pipeline,
+                    model_name=model_name,
+                    prompt=record["caption"],
+                    seed=seed,
+                    device=device,
+                    output_path=output_path,
+                    file_format=file_format,
+                )
+
+            generated.append(
+                {
+                    "variant": result["variant"],
+                    "experiment_dir": result["experiment_dir"],
+                    "prompt_index": prompt_index,
+                    "seed": seed,
+                    "path": output_path,
+                    "skipped": skipped,
+                }
             )
-
-        generated.append(
-            {
-                "variant": result["variant"],
-                "experiment_dir": result["experiment_dir"],
-                "prompt_index": prompt_index,
-                "seed": seed,
-                "path": output_path,
-                "skipped": skipped,
-            }
-        )
 
     return generated
 
@@ -164,7 +155,7 @@ def main(args: argparse.Namespace):
 
     split = args.split or infer_split(args.manifest_path, manifest)
     variants = normalize_variants(args)
-    needs_baseline_sample = should_generate_baseline_sample(variants)
+    needs_baseline_sample = split == "test"
     pipeline = None
     device = None
     if needs_baseline_sample:
@@ -189,7 +180,7 @@ def main(args: argparse.Namespace):
 
     baseline_sample_results = []
     if needs_baseline_sample:
-        baseline_sample_results = generate_inline_baseline_sample(
+        baseline_sample_results = generate_inline_baseline_samples(
             manifest=manifest,
             results=results,
             model_name=args.model_name,
