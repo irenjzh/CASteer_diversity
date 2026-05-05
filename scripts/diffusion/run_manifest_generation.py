@@ -7,9 +7,15 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from core.create_dataset import load_json, save_json
-from core.generate_dataset import build_standard_variants, generate_dataset_variants
-from core.utils import SUPPORTED_DIFFUSION_MODELS
+from core.create_dataset import ensure_dir, load_json, save_json
+from core.generate_dataset import (
+    EXTENSIONS,
+    _generate_single_image,
+    _prompt_dir,
+    build_standard_variants,
+    generate_dataset_variants,
+)
+from core.utils import SUPPORTED_DIFFUSION_MODELS, get_device, init_pipeline_for_image_model
 
 
 def infer_split(manifest_path: str, manifest) -> str:
@@ -38,11 +44,17 @@ def normalize_variants(args: argparse.Namespace) -> list[dict]:
     if requested == ["all"]:
         if args.steering_source is None:
             return [{"name": "baseline", "baseline": True}]
-        return build_standard_variants(
+        variants = build_standard_variants(
             steering_source=args.steering_source,
             strength=args.steering_strength,
             random_seed=args.random_seed,
         )
+        for variant in variants:
+            if not variant.get("baseline", False):
+                variant["use_all_diffusion_steps"] = args.use_all_diffusion_steps
+                variant["renormalize_output"] = args.output_renorm
+                variant["concept_seed"] = args.concept_seed
+        return variants
 
     variants = []
     for name in requested:
@@ -56,7 +68,7 @@ def normalize_variants(args: argparse.Namespace) -> list[dict]:
                     "steering_source": args.steering_source,
                     "strength": args.steering_strength,
                     "use_all_diffusion_steps": args.use_all_diffusion_steps,
-                    "renormalize_output": not args.disable_output_renorm, 
+                    "renormalize_output": args.output_renorm,
                     "concept_seed": args.concept_seed,
                 }
             )
@@ -70,13 +82,73 @@ def normalize_variants(args: argparse.Namespace) -> list[dict]:
                     "randomize_source": True,
                     "random_seed": args.random_seed,
                     "use_all_diffusion_steps": args.use_all_diffusion_steps,
-                    "renormalize_output": not args.disable_output_renorm,
+                    "renormalize_output": args.output_renorm,
                     "concept_seed": args.concept_seed,
                 }
             )
         else:
             raise ValueError(f"Unknown variant: {name}")
     return variants
+
+
+def should_generate_baseline_sample(variants: list[dict]) -> bool:
+    has_steering = any(
+        variant.get("name") in {"best_steering", "random_steering"}
+        for variant in variants
+    )
+    has_full_baseline = any(variant.get("baseline", False) for variant in variants)
+    return has_steering and not has_full_baseline
+
+
+def generate_inline_baseline_sample(
+    *,
+    manifest: list[dict],
+    results: list[dict],
+    model_name: str,
+    pipeline,
+    device,
+    file_format: str,
+) -> list[dict]:
+    record = manifest[0]
+    seeds = list(record.get("seeds", []))
+    if not seeds:
+        raise ValueError("Cannot generate a baseline sample because the first manifest record has no seeds")
+
+    generated: list[dict] = []
+    prompt_index = int(record["prompt_index"])
+    seed = int(seeds[0])
+    ext = EXTENSIONS[file_format]
+
+    for result in results:
+        if result["variant"] not in {"best_steering", "random_steering"}:
+            continue
+
+        prompt_dir = ensure_dir(_prompt_dir(result["experiment_dir"], prompt_index))
+        output_path = os.path.join(prompt_dir, f"baseline.{ext}")
+        skipped = os.path.exists(output_path)
+        if not skipped:
+            _generate_single_image(
+                pipeline=pipeline,
+                model_name=model_name,
+                prompt=record["caption"],
+                seed=seed,
+                device=device,
+                output_path=output_path,
+                file_format=file_format,
+            )
+
+        generated.append(
+            {
+                "variant": result["variant"],
+                "experiment_dir": result["experiment_dir"],
+                "prompt_index": prompt_index,
+                "seed": seed,
+                "path": output_path,
+                "skipped": skipped,
+            }
+        )
+
+    return generated
 
 
 def main(args: argparse.Namespace):
@@ -92,6 +164,12 @@ def main(args: argparse.Namespace):
 
     split = args.split or infer_split(args.manifest_path, manifest)
     variants = normalize_variants(args)
+    needs_baseline_sample = should_generate_baseline_sample(variants)
+    pipeline = None
+    device = None
+    if needs_baseline_sample:
+        device = get_device()
+        pipeline = init_pipeline_for_image_model(model=args.model_name)
 
     print(f"Loaded {len(manifest)} prompts from {args.manifest_path}")
     print(f"Split: {split}")
@@ -103,9 +181,22 @@ def main(args: argparse.Namespace):
         split=split,
         variants=variants,
         model_name=args.model_name,
+        pipeline=pipeline,
+        device=device,
         file_format=args.file_format,
         concept_seed=args.concept_seed,
     )
+
+    baseline_sample_results = []
+    if needs_baseline_sample:
+        baseline_sample_results = generate_inline_baseline_sample(
+            manifest=manifest,
+            results=results,
+            model_name=args.model_name,
+            pipeline=pipeline,
+            device=device,
+            file_format=args.file_format,
+        )
 
     summary = {
         "manifest_path": args.manifest_path,
@@ -115,7 +206,9 @@ def main(args: argparse.Namespace):
         "file_format": args.file_format,
         "steering_source": args.steering_source,
         "steering_strength": args.steering_strength,
+        "output_renorm": args.output_renorm,
         "variants": [variant["name"] for variant in variants],
+        "baseline_sample_results": baseline_sample_results,
         "max_prompts": args.max_prompts,
         "results": results,
     }
@@ -194,9 +287,10 @@ if __name__ == "__main__":
         help="Use stored per-step steering vectors instead of reusing step 0 for all diffusion steps",
     )
     parser.add_argument(
-        "--disable_output_renorm",
-        action="store_true",
-        help="Disable output renormalization in the additive steering controller",
+        "--output_renorm",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable output renormalization in the additive steering controller",
     )
     parser.add_argument(
         "--file_format",
