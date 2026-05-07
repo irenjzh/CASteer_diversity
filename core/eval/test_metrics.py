@@ -309,38 +309,12 @@ class MPSMetric:
         return np.asarray(scores, dtype=np.float32)
 
 
-def vendi_score_from_embeddings(embeddings: np.ndarray) -> float:
-    embeddings = np.asarray(embeddings, dtype=np.float32)
-
-    if embeddings.ndim != 2:
-        raise ValueError("embeddings must have shape [num_images, dim]")
-
-    num_images = embeddings.shape[0]
-    if num_images == 0:
-        raise ValueError("Cannot compute Vendi score for an empty set of embeddings")
-    if num_images == 1:
-        return 1.0
-
-    normalized = embeddings / np.clip(np.linalg.norm(embeddings, axis=1, keepdims=True), 1e-8, None)
-    similarity = normalized @ normalized.T
-    similarity = 0.5 * (similarity + similarity.T)
-
-    eigenvalues = np.linalg.eigvalsh(similarity / float(num_images))
-    eigenvalues = np.clip(eigenvalues, 0.0, None)
-    total = float(eigenvalues.sum())
-    if total <= 0:
-        return 0.0
-    eigenvalues = eigenvalues / total
-    nonzero = eigenvalues[eigenvalues > 0]
-    entropy = -np.sum(nonzero * np.log(nonzero))
-    return float(np.exp(entropy))
-
-
-def vendi_score_library_from_embeddings(embeddings: np.ndarray, q: float = 1.0) -> float:
+def vendi_score_from_embeddings(embeddings: np.ndarray, q: float = 1.0) -> float:
     """Compute Vendi Score with the official vendi_score package from embeddings."""
     from vendi_score import vendi
 
     embeddings = np.asarray(embeddings, dtype=np.float32)
+
     if embeddings.ndim != 2:
         raise ValueError("embeddings must have shape [num_images, dim]")
 
@@ -354,6 +328,10 @@ def vendi_score_library_from_embeddings(embeddings: np.ndarray, q: float = 1.0) 
     similarity = normalized @ normalized.T
     similarity = 0.5 * (similarity + similarity.T)
     return float(vendi.score_K(similarity, q=q))
+
+
+def vendi_score_library_from_embeddings(embeddings: np.ndarray, q: float = 1.0) -> float:
+    return vendi_score_from_embeddings(embeddings, q=q)
 
 
 class VendiScoreTestRunEvaluator:
@@ -521,6 +499,7 @@ class TestMetricsEvaluator:
                 "image_reward_model": self.image_reward_model_name,
                 "mps_model": self.mps_model_name,
                 "vendi_embedding_model": self.clip_model_name if "vendi" in self.metrics else None,
+                "vendi_implementation": "vendi_score.vendi.score_K" if "vendi" in self.metrics else None,
             },
             "per_prompt": {},
             "aggregate": {},
