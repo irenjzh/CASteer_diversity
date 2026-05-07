@@ -768,10 +768,13 @@ def generate_dataset_variants(
         if variant.get("randomize_source", False):
             if steering_source is None:
                 raise ValueError(f"Variant {variant_name!r} requested random steering without a steering source")
-            random_seed = int(variant.get("random_seed", DEFAULT_RANDOM_STEERING_SEED))
-            steering_source = create_random_steering_vectors(template_from_source(steering_source), seed=random_seed)
             random_source_path = os.path.join(experiment_dir, "random_steering_vector.pickle")
-            save_pickle(steering_source, random_source_path)
+            if os.path.exists(random_source_path):
+                steering_source = unpickle(random_source_path)
+            else:
+                random_seed = int(variant.get("random_seed", DEFAULT_RANDOM_STEERING_SEED))
+                steering_source = create_random_steering_vectors(template_from_source(steering_source), seed=random_seed)
+                save_pickle(steering_source, random_source_path)
 
         fixed_steering_vectors = steering_source if _is_steering_vectors(steering_source) else None
         concept_bank = steering_source if _is_concept_bank(steering_source) else None
