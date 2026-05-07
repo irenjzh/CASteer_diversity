@@ -33,30 +33,36 @@ def _get_hf_token():
     return os.environ.get('HF_TOKEN', None)
 
 
+def _component_uses_cpu_or_disk(pipe, component_name: str) -> bool:
+    hf_device_map = getattr(pipe, 'hf_device_map', None) or {}
+    target = hf_device_map.get(component_name)
+
+    if isinstance(target, str):
+        return target in {'cpu', 'disk'}
+    if target is not None:
+        return False
+
+    component = getattr(pipe, component_name, None)
+    if component is None:
+        return False
+
+    try:
+        return next(component.parameters()).device.type == 'cpu'
+    except (StopIteration, AttributeError):
+        return False
+
+
 def _prepare_sana_pipeline(pipe) -> None:
     vae = getattr(pipe, 'vae', None)
     if vae is not None and hasattr(vae, 'enable_tiling'):
         vae.enable_tiling()
 
 
-def _get_module_device_and_dtype(module):
-    try:
-        param = next(module.parameters())
-        return param.device, param.dtype
-    except (StopIteration, AttributeError):
-        return torch.device('cpu'), torch.float32
-
-
-def _decode_sana_latents(pipe, latents):
+def _decode_sana_latents_with_cpu_vae(pipe, latents):
     vae = pipe.vae
-    vae_device, vae_dtype = _get_module_device_and_dtype(vae)
+    vae.to(dtype=torch.float32)
 
-    # CPU bfloat16/float16 decode is not reliably supported across Colab/PyTorch builds.
-    # Decode in float32 on CPU, otherwise keep the module's active dtype on accelerators.
-    decode_dtype = torch.float32 if vae_device.type == 'cpu' else vae_dtype
-    vae.to(device=vae_device, dtype=decode_dtype)
-
-    latents = (latents / vae.config.scaling_factor).to(device=vae_device, dtype=decode_dtype)
+    latents = (latents / vae.config.scaling_factor).to(torch.float32)
     decoded = vae.decode(latents, return_dict=False)[0]
     return pipe.image_processor.postprocess(decoded, output_type='pil')
 
@@ -194,7 +200,7 @@ def get_num_denoising_steps(model: str) -> int:
 
 
 def run_image_model(model_type: str, pipe, prompt: str, seed: int, device: torch.device, num_images: int = 1):
-    use_manual_sana_decode = model_type in ['sana', 'sana-06', 'sana15', 'sana-sprint', 'sana-sprint-06']
+    use_cpu_vae_decode = model_type in ['sana', 'sana-06', 'sana15', 'sana-sprint', 'sana-sprint-06'] and _component_uses_cpu_or_disk(pipe, 'vae')
 
     if model_type in ['sd14', 'sd21', 'sdxl']:
         images = pipe(
@@ -219,10 +225,10 @@ def run_image_model(model_type: str, pipe, prompt: str, seed: int, device: torch
             width=1024,
             generator=torch.Generator(device=device).manual_seed(seed),
             num_images_per_prompt=num_images,
-            output_type='latent' if use_manual_sana_decode else 'pil',
+            output_type='latent' if use_cpu_vae_decode else 'pil',
         )
-        if use_manual_sana_decode:
-            images = _decode_sana_latents(pipe, result.images)
+        if use_cpu_vae_decode:
+            images = _decode_sana_latents_with_cpu_vae(pipe, result.images)
         else:
             images = result.images
     elif model_type in ['sana-sprint', 'sana-sprint-06']:
@@ -234,10 +240,10 @@ def run_image_model(model_type: str, pipe, prompt: str, seed: int, device: torch
             intermediate_timesteps=None,
             generator=torch.Generator(device=device).manual_seed(seed),
             num_images_per_prompt=num_images,
-            output_type='latent' if use_manual_sana_decode else 'pil',
+            output_type='latent' if use_cpu_vae_decode else 'pil',
         )
-        if use_manual_sana_decode:
-            images = _decode_sana_latents(pipe, result.images)
+        if use_cpu_vae_decode:
+            images = _decode_sana_latents_with_cpu_vae(pipe, result.images)
         else:
             images = result.images
     else:

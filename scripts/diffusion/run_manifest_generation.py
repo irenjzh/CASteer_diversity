@@ -37,6 +37,11 @@ def normalize_variants(args: argparse.Namespace) -> list[dict]:
         return [{"name": "baseline", "baseline": True}]
 
     requested = list(args.variants)
+    random_steering_strength = (
+        args.steering_strength
+        if args.random_steering_strength is None
+        else args.random_steering_strength
+    )
     steering_required = any(name in {"best_steering", "random_steering"} for name in requested)
     if steering_required and args.steering_source is None:
         raise ValueError("--steering_source is required for best_steering or random_steering variants")
@@ -49,6 +54,9 @@ def normalize_variants(args: argparse.Namespace) -> list[dict]:
             strength=args.steering_strength,
             random_seed=args.random_seed,
         )
+        for variant in variants:
+            if variant["name"] == "random_steering":
+                variant["strength"] = random_steering_strength
         for variant in variants:
             if not variant.get("baseline", False):
                 variant["use_all_diffusion_steps"] = args.use_all_diffusion_steps
@@ -78,7 +86,7 @@ def normalize_variants(args: argparse.Namespace) -> list[dict]:
                     "name": "random_steering",
                     "baseline": False,
                     "steering_source": args.steering_source,
-                    "strength": 1,
+                    "strength": random_steering_strength,
                     "randomize_source": True,
                     "random_seed": args.random_seed,
                     "use_all_diffusion_steps": args.use_all_diffusion_steps,
@@ -113,7 +121,7 @@ def generate_inline_baseline_samples(
                 )
 
             prompt_index = int(record["prompt_index"])
-            seed = int(seeds[0])
+            seed = int(7)
             prompt_dir = ensure_dir(_prompt_dir(result["experiment_dir"], prompt_index))
             output_path = os.path.join(prompt_dir, f"baseline.{ext}")
             skipped = os.path.exists(output_path)
@@ -197,6 +205,11 @@ def main(args: argparse.Namespace):
         "file_format": args.file_format,
         "steering_source": args.steering_source,
         "steering_strength": args.steering_strength,
+        "random_steering_strength": (
+            args.steering_strength
+            if args.random_steering_strength is None
+            else args.random_steering_strength
+        ),
         "output_renorm": args.output_renorm,
         "variants": [variant["name"] for variant in variants],
         "baseline_sample_results": baseline_sample_results,
@@ -258,7 +271,13 @@ if __name__ == "__main__":
         "--steering_strength",
         type=float,
         default=1.0,
-        help="Additive steering strength used for best_steering and random_steering",
+        help="Additive steering strength used for best_steering",
+    )
+    parser.add_argument(
+        "--random_steering_strength",
+        type=float,
+        default=None,
+        help="Additive steering strength used for random_steering (defaults to --steering_strength)",
     )
     parser.add_argument(
         "--random_seed",

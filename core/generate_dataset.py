@@ -301,13 +301,20 @@ def evaluate_validation_experiment_dir(
     from .eval.clip import clip_score
     from .eval.fid import compute_fid
 
+    baseline_dir = os.path.join(os.path.dirname(experiment_dir), "validation_baseline")
+    if not os.path.isdir(baseline_dir):
+        raise ValueError(
+            f"Expected validation baseline directory at {baseline_dir}. "
+            "Generate the baseline before evaluating validation metrics."
+        )
+
     prompt_dirs = _iter_prompt_dirs(experiment_dir)
     if not prompt_dirs:
         raise ValueError(f"No prompt_* directories found in {experiment_dir}")
 
     image_paths: list[str] = []
     texts: list[str] = []
-    prompt_slices: list[tuple[str, str, int, int]] = []
+    prompt_slices: list[tuple[str, str, str, int, int]] = []
     cursor = 0
 
     for prompt_dir in prompt_dirs:
@@ -322,7 +329,7 @@ def evaluate_validation_experiment_dir(
 
         start = cursor
         end = cursor + len(prompt_images)
-        prompt_slices.append((prompt_name, prompt, start, end))
+        prompt_slices.append((prompt_name, prompt, prompt_dir, start, end))
         image_paths.extend(prompt_images)
         texts.extend([prompt] * len(prompt_images))
         cursor = end
@@ -342,37 +349,52 @@ def evaluate_validation_experiment_dir(
 
     result: dict[str, tp.Any] = {"per_prompt": {}, "aggregate": {}}
     per_prompt_means: list[float] = []
+    per_prompt_fids: list[float] = []
 
-    for prompt_name, prompt, start, end in prompt_slices:
+    for prompt_name, prompt, prompt_dir, start, end in prompt_slices:
         values = np.asarray(clip_values[start:end], dtype=np.float32)
         prompt_mean = float(values.mean())
         prompt_std = float(values.std())
+        baseline_prompt_dir = os.path.join(baseline_dir, prompt_name)
+        if not os.path.isdir(baseline_prompt_dir):
+            raise ValueError(f"Missing baseline prompt directory: {baseline_prompt_dir}")
+        if os.path.abspath(prompt_dir) == os.path.abspath(baseline_prompt_dir):
+            prompt_fid = 0.0
+        else:
+            prompt_fid = float(
+                compute_fid(
+                    first_path=prompt_dir,
+                    first_fname=_generated_file_pattern(file_format),
+                    second_path=baseline_prompt_dir,
+                    second_fname=_generated_file_pattern(file_format),
+                )
+            )
         per_prompt_means.append(prompt_mean)
+        per_prompt_fids.append(prompt_fid)
         result["per_prompt"][prompt_name] = {
             "prompt": prompt,
             "num_images": int(end - start),
             "clip_score_mean": prompt_mean,
             "clip_score_std": prompt_std,
+            "fid": prompt_fid,
         }
-
-    fid_value = float(
-        compute_fid(
-            first_path=experiment_dir,
-            first_fname=_generated_file_pattern(file_format),
-            second_path=reference_dir,
-            second_fname="*.jpg",
+        print(
+            f"[metrics] {prompt_name}: "
+            f"clip_score_mean={prompt_mean:.6f}, clip_score_std={prompt_std:.6f}, fid={prompt_fid:.6f}"
         )
-    )
 
     per_prompt_means_arr = np.asarray(per_prompt_means, dtype=np.float32)
+    per_prompt_fids_arr = np.asarray(per_prompt_fids, dtype=np.float32)
     result["aggregate"] = {
         "clip_score_mean": {
             "mean": float(per_prompt_means_arr.mean()),
             "std": float(per_prompt_means_arr.std()),
         },
-        "fid": fid_value,
+        "fid": float(per_prompt_fids_arr.mean()),
+        "fid_std": float(per_prompt_fids_arr.std()),
         "num_prompts": len(prompt_slices),
         "num_images": len(image_paths),
+        "fid_reference_dir": baseline_dir,
     }
     return result
 
@@ -399,6 +421,7 @@ def flatten_validation_metrics_for_summary(
         "clip_score_mean": float(aggregate["clip_score_mean"]["mean"]),
         "clip_score_std": float(aggregate["clip_score_mean"]["std"]),
         "fid": float(aggregate["fid"]),
+        "fid_std": float(aggregate.get("fid_std", 0.0)),
         "num_prompts": int(aggregate["num_prompts"]),
         "num_images": int(aggregate["num_images"]),
         "experiment_dir": experiment_dir,
@@ -474,6 +497,7 @@ def write_summary_csv(rows: tp.Sequence[dict[str, tp.Any]], output_path: str) ->
         "clip_score_mean",
         "clip_score_std",
         "fid",
+        "fid_std",
         "pareto_rank",
         "selection_score",
         "is_selected_best",
