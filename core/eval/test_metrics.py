@@ -336,6 +336,99 @@ def vendi_score_from_embeddings(embeddings: np.ndarray) -> float:
     return float(np.exp(entropy))
 
 
+def vendi_score_library_from_embeddings(embeddings: np.ndarray, q: float = 1.0) -> float:
+    """Compute Vendi Score with the official vendi_score package from embeddings."""
+    from vendi_score import vendi
+
+    embeddings = np.asarray(embeddings, dtype=np.float32)
+    if embeddings.ndim != 2:
+        raise ValueError("embeddings must have shape [num_images, dim]")
+
+    num_images = embeddings.shape[0]
+    if num_images == 0:
+        raise ValueError("Cannot compute Vendi score for an empty set of embeddings")
+    if num_images == 1:
+        return 1.0
+
+    normalized = embeddings / np.clip(np.linalg.norm(embeddings, axis=1, keepdims=True), 1e-8, None)
+    similarity = normalized @ normalized.T
+    similarity = 0.5 * (similarity + similarity.T)
+    return float(vendi.score_K(similarity, q=q))
+
+
+class VendiScoreTestRunEvaluator:
+    def __init__(
+        self,
+        *,
+        device: str | None = None,
+        clip_model: str = "ViT-B/32",
+        clip_image_size: int = 224,
+        batch_size: int = 16,
+        q: float = 1.0,
+    ) -> None:
+        self.device = resolve_metric_device(device)
+        self.clip_model_name = clip_model
+        self.clip_image_size = clip_image_size
+        self.batch_size = batch_size
+        self.q = q
+        self._clip_backend: CLIPBackbone | None = None
+
+    def _clip_backend_instance(self) -> CLIPBackbone:
+        if self._clip_backend is None:
+            self._clip_backend = CLIPBackbone(
+                clip_model=self.clip_model_name,
+                image_size=self.clip_image_size,
+                batch_size=self.batch_size,
+                device=self.device,
+            )
+        return self._clip_backend
+
+    def evaluate_experiment_dir(
+        self,
+        experiment_dir: str,
+        *,
+        file_format: str | None = None,
+    ) -> dict[str, Any]:
+        prompt_records = load_prompt_records(experiment_dir, file_format=file_format)
+
+        result: dict[str, Any] = {
+            "metadata": {
+                "metric": "vendi_score",
+                "implementation": "vendi_score.vendi.score_K",
+                "embedding_model": self.clip_model_name,
+                "clip_image_size": self.clip_image_size,
+                "device": self.device,
+                "q": self.q,
+            },
+            "per_prompt": {},
+            "aggregate": {},
+        }
+        values: list[float] = []
+        num_images = 0
+
+        for record in tqdm(prompt_records, desc=f"Vendi {os.path.basename(experiment_dir)}"):
+            embeddings = self._clip_backend_instance().encode_images(record.image_paths).numpy()
+            vendi_value = vendi_score_library_from_embeddings(embeddings, q=self.q)
+            result["per_prompt"][record.prompt_name] = {
+                "prompt": record.prompt,
+                "num_images": len(record.image_paths),
+                "vendi_score": vendi_value,
+            }
+            values.append(vendi_value)
+            num_images += len(record.image_paths)
+
+        values_arr = np.asarray(values, dtype=np.float32)
+        result["aggregate"] = {
+            "vendi_score": {
+                "mean": float(values_arr.mean()),
+                "std": float(values_arr.std()),
+            },
+            "num_prompts": len(prompt_records),
+            "num_images": num_images,
+        }
+        return result
+
+
 class TestMetricsEvaluator:
     def __init__(
         self,
@@ -615,3 +708,162 @@ def discover_experiment_dirs(
         )
     )
     return discovered
+
+
+def _fallback_discover_vendi_test_dirs(
+    output_root: str,
+    variants: Sequence[str],
+) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    variant_filter = set(variants)
+
+    for name in sorted(os.listdir(output_root)):
+        experiment_dir = os.path.join(output_root, name)
+        if not os.path.isdir(experiment_dir):
+            continue
+
+        lowered = name.lower()
+        variant = None
+        if "baseline" in lowered:
+            variant = "baseline"
+        elif "random" in lowered:
+            variant = "random_steering"
+        elif "steering" in lowered:
+            variant = "best_steering"
+
+        if variant is None or variant not in variant_filter:
+            continue
+
+        candidates.append(
+            {
+                "experiment_dir": experiment_dir,
+                "config": {
+                    "split": "test",
+                    "variant": variant,
+                    "strength": None,
+                    "file_format": None,
+                },
+            }
+        )
+
+    rank = {name: idx for idx, name in enumerate(DEFAULT_VARIANT_ORDER)}
+    candidates.sort(
+        key=lambda item: (
+            rank.get(str(item["config"].get("variant")), len(rank)),
+            item["experiment_dir"],
+        )
+    )
+    return candidates
+
+
+def _unique_vendi_result_label(
+    preferred_label: str,
+    existing: dict[str, Any],
+    *,
+    config: dict[str, Any],
+    experiment_dir: str,
+) -> str:
+    if preferred_label not in existing:
+        return preferred_label
+
+    strength = config.get("strength")
+    if strength is not None:
+        candidate = f"{preferred_label}_b{strength}"
+    else:
+        candidate = os.path.basename(experiment_dir)
+
+    if candidate not in existing:
+        return candidate
+
+    index = 2
+    while f"{candidate}_{index}" in existing:
+        index += 1
+    return f"{candidate}_{index}"
+
+
+def evaluate_vendi_score_test_run(
+    output_root: str,
+    *,
+    output_path: str | None = None,
+    split: str = "test",
+    variants: Sequence[str] = DEFAULT_VARIANT_ORDER,
+    device: str | None = None,
+    clip_model: str = "ViT-B/32",
+    clip_image_size: int = 224,
+    batch_size: int = 16,
+    q: float = 1.0,
+) -> dict[str, Any]:
+    discovered = discover_experiment_dirs(
+        output_root,
+        split=split,
+        variants=variants,
+    )
+    if not discovered:
+        discovered = _fallback_discover_vendi_test_dirs(output_root, variants)
+    if not discovered:
+        raise ValueError(f"No test experiment directories found in {output_root}")
+
+    evaluator = VendiScoreTestRunEvaluator(
+        device=device,
+        clip_model=clip_model,
+        clip_image_size=clip_image_size,
+        batch_size=batch_size,
+        q=q,
+    )
+
+    results: dict[str, Any] = {}
+    summary: list[dict[str, Any]] = []
+    for item in discovered:
+        experiment_dir = item["experiment_dir"]
+        config = item["config"]
+        variant = str(config.get("variant"))
+        preferred_label = variant
+        label = _unique_vendi_result_label(
+            preferred_label,
+            results,
+            config=config,
+            experiment_dir=experiment_dir,
+        )
+        metrics_payload = evaluator.evaluate_experiment_dir(
+            experiment_dir,
+            file_format=config.get("file_format"),
+        )
+        aggregate = metrics_payload["aggregate"]
+        row = {
+            "label": label,
+            "split": config.get("split", split),
+            "variant": variant,
+            "strength": config.get("strength"),
+            "vendi_score_mean": float(aggregate["vendi_score"]["mean"]),
+            "vendi_score_std": float(aggregate["vendi_score"]["std"]),
+            "num_prompts": int(aggregate["num_prompts"]),
+            "num_images": int(aggregate["num_images"]),
+            "experiment_dir": experiment_dir,
+        }
+        results[label] = {
+            "config": config,
+            "experiment_dir": experiment_dir,
+            **metrics_payload,
+        }
+        summary.append(row)
+
+    payload = {
+        "metadata": {
+            "metric": "vendi_score",
+            "implementation": "vendi_score.vendi.score_K",
+            "output_root": output_root,
+            "split": split,
+            "variants": list(variants),
+            "clip_model": clip_model,
+            "clip_image_size": clip_image_size,
+            "device": evaluator.device,
+            "q": q,
+        },
+        "summary": summary,
+        "results": results,
+    }
+
+    if output_path is None:
+        output_path = os.path.join(output_root, "vendi_score_test_run.json")
+    save_json(output_path, payload)
+    return payload
