@@ -77,7 +77,7 @@ def get_device() -> torch.device:
 
 SUPPORTED_DIFFUSION_MODELS = [
     'sd14', 'sd21', 'sd21-turbo',
-    'sdxl', 'sdxl-turbo',
+    'sdxl', 'sdxl_cno', 'sdxl-turbo',
     'sana', 'sana15', 'sana-sprint',
     'sana-06', 'sana-sprint-06',
 ]
@@ -108,7 +108,7 @@ def init_pipeline_for_image_model(model: str) -> DiffusionPipeline:
             cache_dir='./cache',
             device_map='balanced',
         )
-    elif model == 'sdxl':
+    elif model in ('sdxl', 'sdxl_cno'):
         pipe = DiffusionPipeline.from_pretrained(
             "stabilityai/stable-diffusion-xl-base-1.0",
             torch_dtype=torch.float16,
@@ -191,6 +191,8 @@ def get_num_denoising_steps(model: str) -> int:
         return 1
     elif model in ('sdxl',):
         return 30
+    elif model in ('sdxl_cno',):
+        return 50
     elif model in ('sana', 'sana-06', 'sana15'):
         return 20
     elif model in ('sana-sprint', 'sana-sprint-06'):
@@ -202,12 +204,16 @@ def get_num_denoising_steps(model: str) -> int:
 def run_image_model(model_type: str, pipe, prompt: str, seed: int, device: torch.device, num_images: int = 1):
     use_cpu_vae_decode = model_type in ['sana', 'sana-06', 'sana15', 'sana-sprint', 'sana-sprint-06'] and _component_uses_cpu_or_disk(pipe, 'vae')
 
-    if model_type in ['sd14', 'sd21', 'sdxl']:
+    if model_type in ['sd14', 'sd21', 'sdxl', 'sdxl_cno']:
+        pipe_kwargs = {}
+        if model_type == 'sdxl_cno':
+            pipe_kwargs['guidance_scale'] = 6.0
         images = pipe(
             prompt=prompt,
             num_inference_steps=get_num_denoising_steps(model_type),
             generator=torch.Generator(device=device).manual_seed(seed),
             num_images_per_prompt=num_images,
+            **pipe_kwargs,
         ).images
     elif model_type in ['sd21-turbo', 'sdxl-turbo']:
         images = pipe(

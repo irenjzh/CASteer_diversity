@@ -15,7 +15,7 @@ class DiffusionModelType(enum.StrEnum):
 
         if model in ["sana", "sana-sprint", "sana-06", "sana-sprint-06", "sana15"]:
             return DiffusionModelType.SANA
-        if model in ["sd14", "sd21", "sd21-turbo", "sdxl", "sdxl-turbo"]:
+        if model in ["sd14", "sd21", "sd21-turbo", "sdxl", "sdxl_cno", "sdxl-turbo"]:
             return DiffusionModelType.SD
         raise ValueError(f"Unknown model type: {model}. Supported types: {list(DiffusionModelType)}")
 
