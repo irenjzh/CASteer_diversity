@@ -1,7 +1,7 @@
 import os
 import torch
 
-from diffusers import StableDiffusionPipeline, DiffusionPipeline, AutoPipelineForText2Image
+from diffusers import StableDiffusionPipeline, DiffusionPipeline, AutoPipelineForText2Image, DDIMScheduler
 
 try:
     from diffusers import SanaPipeline
@@ -118,6 +118,8 @@ def init_pipeline_for_image_model(model: str) -> DiffusionPipeline:
             device_map='balanced',
             safety_checker=None,
         )
+        if model == 'sdxl_cno':
+            pipe.scheduler = DDIMScheduler.from_config(pipe.scheduler.config)
     elif model == 'sdxl-turbo':
         pipe = AutoPipelineForText2Image.from_pretrained(
             "stabilityai/sdxl-turbo",
