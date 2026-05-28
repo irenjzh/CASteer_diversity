@@ -784,6 +784,7 @@ def generate_dataset_variants(
             "split": split,
             "variant": variant_name,
             "model_name": model_name,
+            "scheduler": pipeline.scheduler.__class__.__name__ if hasattr(pipeline, "scheduler") else None,
             "file_format": file_format,
             "baseline": baseline,
             "strength": strength,
